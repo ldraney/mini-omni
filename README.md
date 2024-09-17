@@ -1,4 +1,16 @@
 
+
+# Current progress
+1. got local and cloud server communicating
+2. got cloud to process an audio file, kind of.  got to prove it more first.
+
+
+
+
+
+
+
+
 # Mini-Omni
 
 <p align="center"><strong style="font-size: 18px;">
