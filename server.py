@@ -1,3 +1,4 @@
+import traceback
 from flask import Flask, request
 from flask_socketio import SocketIO, emit
 import base64
@@ -22,10 +23,16 @@ class OmniChatServer:
         self.audio_data = b""
 
     def process_audio(self):
-        self.temp_audio_file.write(self.audio_data)
-        self.temp_audio_file.flush()
-        audio_generator = self.client.run_AT_batch_stream(self.temp_audio_file.name, stream_stride=4, max_tokens=1024)
-        return audio_generator
+        try:
+            self.temp_audio_file.write(self.audio_data)
+            self.temp_audio_file.flush()
+            # Check the correct method signature and adjust accordingly
+            audio_generator = self.client.run_AT_batch_stream(self.temp_audio_file.name, stream_stride=4)
+            return audio_generator
+        except Exception as e:
+            print(f"Error in process_audio: {str(e)}")
+            print(traceback.format_exc())
+            return None
 
 omni_server = OmniChatServer()
 
@@ -46,8 +53,16 @@ def handle_audio_stream(data):
     
     if data.get('end_of_stream', False):
         audio_response = omni_server.process_audio()
-        for chunk in audio_response:
-            emit('audio_response', {'audio': base64.b64encode(chunk).decode('utf-8')})
+        if audio_response:
+            try:
+                for chunk in audio_response:
+                    emit('audio_response', {'audio': base64.b64encode(chunk).decode('utf-8')})
+            except Exception as e:
+                print(f"Error in audio response streaming: {str(e)}")
+                print(traceback.format_exc())
+                emit('error', {'message': 'Error processing audio'})
+        else:
+            emit('error', {'message': 'Failed to process audio'})
         omni_server.audio_data = b""
         omni_server.temp_audio_file.seek(0)
         omni_server.temp_audio_file.truncate()
