@@ -1,19 +1,16 @@
-import flask
+from flask import Flask, request
+from flask_socketio import SocketIO, emit
 import base64
 import tempfile
-import traceback
-from flask import Flask, Response, stream_with_context, jsonify
 from inference import OmniInference
 import torch
-import io
-import soundfile as sf
+
+app = Flask(__name__)
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 class OmniChatServer:
-    def __init__(self, ip='0.0.0.0', port=60808, run_app=True,
-                 ckpt_dir='./checkpoint', device='cpu') -> None:
-        server = Flask(__name__)
-        
-        if torch.cuda.is_available() and torch.cuda.get_device_properties(0).total_memory > 6 * 1024 * 1024 * 1024:  # 6 GB
+    def __init__(self, ckpt_dir='./checkpoint', device='cpu'):
+        if torch.cuda.is_available() and torch.cuda.get_device_properties(0).total_memory > 6 * 1024 * 1024 * 1024:
             device = 'cuda:0'
         else:
             device = 'cpu'
@@ -21,42 +18,43 @@ class OmniChatServer:
         
         self.client = OmniInference(ckpt_dir, device)
         self.client.warm_up()
+        self.temp_audio_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+        self.audio_data = b""
 
-        server.route("/chat", methods=["POST"])(self.chat)
-        server.route("/health", methods=["GET"])(self.health_check)
+    def process_audio(self):
+        self.temp_audio_file.write(self.audio_data)
+        self.temp_audio_file.flush()
+        audio_generator = self.client.run_AT_batch_stream(self.temp_audio_file.name, stream_stride=4, max_tokens=1024)
+        return audio_generator
 
-        if run_app:
-            server.run(host=ip, port=port, threaded=False)
-        else:
-            self.server = server
+omni_server = OmniChatServer()
 
-    def chat(self) -> Response:
-        req_data = flask.request.get_json()
-        try:
-            data_buf = req_data["audio"].encode("utf-8")
-            data_buf = base64.b64decode(data_buf)
-            stream_stride = req_data.get("stream_stride", 4)
-            max_tokens = req_data.get("max_tokens", 1024)
+@socketio.on('connect')
+def handle_connect():
+    print('Client connected')
+    emit('connection_response', {'data': 'Connected'})
 
-            # Convert the audio data to a format that can be processed by the model
-            with io.BytesIO(data_buf) as buf:
-                audio_data, sample_rate = sf.read(buf)
+@socketio.on('disconnect')
+def handle_disconnect():
+    print('Client disconnected')
 
-            # Process the audio data with the model
-            audio_generator = self.client.run_AT_batch_stream(audio_data, stream_stride, max_tokens)
-            return Response(stream_with_context(audio_generator), mimetype="audio/wav")
-        except Exception as e:
-            print(f"Error in chat endpoint: {str(e)}")
-            print(f"Request data: {req_data}")
-            print(traceback.format_exc())
-            return Response(f"An error occurred: {str(e)}\n{traceback.format_exc()}", status=500)
+@socketio.on('audio_stream')
+def handle_audio_stream(data):
+    print(f"Received audio chunk, end of stream: {data.get('end_of_stream', False)}")
+    audio_chunk = base64.b64decode(data['audio'])
+    omni_server.audio_data += audio_chunk
+    
+    if data.get('end_of_stream', False):
+        audio_response = omni_server.process_audio()
+        for chunk in audio_response:
+            emit('audio_response', {'audio': base64.b64encode(chunk).decode('utf-8')})
+        omni_server.audio_data = b""
+        omni_server.temp_audio_file.seek(0)
+        omni_server.temp_audio_file.truncate()
 
-    def health_check(self):
-        return jsonify({"status": "healthy", "message": "Server is running"}), 200
+@app.route('/health', methods=['GET'])
+def health_check():
+    return {"status": "healthy", "message": "Server is running"}, 200
 
-def serve(ip='0.0.0.0', port=60808):
-    OmniChatServer(ip, port=port, run_app=True)
-
-if __name__ == "__main__":
-    import fire
-    fire.Fire(serve)
+if __name__ == '__main__':
+    socketio.run(app, host='0.0.0.0', port=60808)
