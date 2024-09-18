@@ -24,13 +24,18 @@ class AudioPlayer:
         self.stream = self.p.open(format=pyaudio.paInt16,
                                   channels=1,
                                   rate=24000,
-                                  output=True)
+                                  output=True,
+                                  frames_per_buffer=1024)
 
     def play(self, audio_data):
-        self.stream.write(audio_data)
+        try:
+            self.stream.write(audio_data)
+        except IOError as e:
+            print(f"Error playing audio: {e}")
 
     def close(self):
-        self.stream.stop_stream()
+        if self.stream.is_active():
+            self.stream.stop_stream()
         self.stream.close()
         self.p.terminate()
 
@@ -56,7 +61,7 @@ def stream_audio(file_path, chunk_size=1024):
 if __name__ == '__main__':
     server_url = 'https://60808-01j7xtj1w8q48sah617zmkznth.cloudspaces.litng.ai'
     try:
-        sio.connect(server_url, wait_timeout=10, transports=['websocket'])
+        sio.connect(server_url, wait_timeout=10)
         
         audio_file_path = 'gettysburg.wav'
         stream_audio(audio_file_path)
@@ -66,3 +71,4 @@ if __name__ == '__main__':
         print(f"Connection failed: {e}")
     finally:
         audio_player.close()
+
